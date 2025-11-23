@@ -33,7 +33,8 @@ class OverlayHandler(SimpleHTTPRequestHandler):
         data = {"mode": "clear", "text": "", "font_size": 30, "ts": 0}
         try:
             if self.state_path.exists():
-                loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
+                raw = self.state_path.read_bytes()
+                loaded = json.loads(raw.decode("utf-8", errors="replace"))
                 if isinstance(loaded, dict):
                     data.update(loaded)
         except Exception as exc:  # pragma: no cover - best effort
