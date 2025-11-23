@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Leviathan Overlay</title>
+  <style>
+    :root {
+      --text: #1b140a;
+      --shadow: rgba(0,0,0,0.35);
+    }
+    html, body {
+      margin: 0; padding: 0; overflow: hidden;
+      width: 100vw; height: 100vh;
+      background: transparent;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+    #container {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      pointer-events: none;
+      padding-bottom: 12px;
+    }
+    #box {
+      position: relative;
+      width: min(80vw, 1200px);
+      aspect-ratio: 1536 / 1024;
+      background: url("./LeviathanChat.png") center/contain no-repeat;
+      box-shadow: 0 16px 40px var(--shadow);
+      opacity: 1;
+      transform: translateY(8px) scale(0.99);
+      transform-origin: center bottom;
+      transition: transform 0.25s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8%;
+    }
+    #box.visible {
+      transform: translateY(0) scale(1);
+    }
+    .text {
+      color: var(--text);
+      text-align: center;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.3;
+      width: 100%;
+      font-weight: 600;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .thinking-bar {
+      position: absolute;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 24px;
+      letter-spacing: 2px;
+      color: var(--text);
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+    #box.think .thinking-bar { opacity: 1; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="box" class="">
+      <div id="text" class="text"></div>
+      <div id="thinkbar" class="thinking-bar hidden">...</div>
+    </div>
+  </div>
+
+  <script>
+    const stateUrl = "/state";
+    const bubble = document.getElementById("box");
+    const textEl = document.getElementById("text");
+    const thinkbar = document.getElementById("thinkbar");
+
+    let lastTs = 0;
+    let lastMode = "clear";
+    let typeTimer = null;
+    let dotsTimer = null;
+
+    async function poll() {
+      try {
+        const res = await fetch(stateUrl, { cache: "no-store" });
+        if (!res.ok) throw new Error("Bad response");
+        const data = await res.json();
+        if (!data || data.ts === lastTs) return;
+        lastTs = data.ts;
+        updateOverlay(data);
+      } catch (err) {
+        console.error("Overlay poll error:", err);
+      }
+    }
+
+    function updateOverlay({ mode, text, font_size }) {
+      const clean = (text || "").replace(/^['"]|['"]$/g, "").trim();
+      if (mode === "clear" || !clean) {
+        stopTypewriter();
+        stopDots();
+        textEl.textContent = "";
+        textEl.style.fontSize = "";
+        bubble.classList.remove("speak", "think");
+        bubble.classList.add("visible");
+        lastMode = "clear";
+        return;
+      }
+
+      bubble.classList.remove("speak", "think");
+      if (mode === "think") {
+        textEl.style.fontSize = "255px";
+        bubble.classList.add("think");
+        startDots();
+        textEl.textContent = "...";
+        lastMode = "think";
+      } else {
+      textEl.style.fontSize = `min(${(font_size || 36) + 10}px, 5vw)`;
+        bubble.classList.add("speak");
+        stopDots();
+        startTypewriter(clean);
+        lastMode = "speak";
+      }
+      bubble.classList.add("visible");
+    }
+
+    function startDots() {
+      stopTypewriter();
+      stopDots();
+      let dots = 0;
+      textEl.textContent = "...";
+      dotsTimer = setInterval(() => {
+        dots = (dots + 1) % 4;
+        textEl.textContent = ".".repeat(dots || 1);
+      }, 500);
+    }
+
+    function stopDots() {
+      if (dotsTimer) clearInterval(dotsTimer);
+      dotsTimer = null;
+    }
+
+    function startTypewriter(text) {
+      stopTypewriter();
+      const words = text.split(/\s+/).filter(Boolean);
+      if (!words.length) {
+        textEl.textContent = "";
+        return;
+      }
+      textEl.textContent = "";
+      let idx = 0;
+      typeTimer = setInterval(() => {
+        idx += 1;
+        textEl.textContent = words.slice(0, idx).join(" ");
+        if (idx >= words.length) {
+          stopTypewriter();
+        }
+      }, 320);
+    }
+
+    function stopTypewriter() {
+      if (typeTimer) clearInterval(typeTimer);
+      typeTimer = null;
+    }
+
+    setInterval(poll, 250);
+    poll();
+  </script>
+</body>
+</html>
