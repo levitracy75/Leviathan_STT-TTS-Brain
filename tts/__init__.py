@@ -21,16 +21,19 @@ DEFAULT_VOICE_ID = "6vZmwtARjUveRB7xsRcW"
 DEFAULT_STABILITY = 0.35
 DEFAULT_SIMILARITY = 0.7
 DEFAULT_SPEED = 0.9  # Slightly quicker than minimum
+DEFAULT_PLAYBACK_VOLUME = 0.6  # Default lower volume for playback
 
 
 def speak(text: str, *, voice_id: Optional[str] = None, play: bool = True) -> bytes:
     """
     Synthesize speech using the non-streaming endpoint. Returns audio bytes.
     """
-    client = _build_client(voice_id)
+    settings = load_settings()
+    client = _build_client(settings, voice_id)
+    volume = _resolve_playback_volume(settings)
     audio = client.speak_to_bytes(text)
     if play:
-        play_audio_bytes(audio, description="tts")
+        play_audio_bytes(audio, description="tts", volume=volume)
     return audio
 
 
@@ -38,16 +41,18 @@ def stream_speech(text: str, *, voice_id: Optional[str] = None, play: bool = Tru
     """
     Stream speech; when play=True audio is played as it arrives, otherwise chunks are returned.
     """
-    client = _build_client(voice_id)
+    settings = load_settings()
+    client = _build_client(settings, voice_id)
+    volume = _resolve_playback_volume(settings)
     chunks = client.stream_audio_chunks(text)
     if play:
-        play_audio_stream(chunks)
+        play_audio_stream(chunks, volume=volume)
         return None
     return chunks
 
 
-def _build_client(voice_id: Optional[str] = None) -> ElevenLabsClient:
-    settings = load_settings()
+def _build_client(settings=None, voice_id: Optional[str] = None) -> ElevenLabsClient:
+    settings = settings or load_settings()
     if not settings.elevenlabs_api_key:
         raise RuntimeError("ELEVENLABS_API_KEY is required. Set it in your .env.")
 
@@ -86,6 +91,16 @@ def _build_client(voice_id: Optional[str] = None) -> ElevenLabsClient:
     return ElevenLabsClient(config)
 
 
+def _resolve_playback_volume(settings) -> float:
+    """
+    Resolve playback volume from settings with a safe default.
+    """
+    volume = settings.tts_playback_volume
+    if volume is None:
+        return DEFAULT_PLAYBACK_VOLUME
+    return _clamp_volume(volume)
+
+
 def _clamp_speed(speed: float) -> float:
     """
     Clamp speed to ElevenLabs-supported range [0.7, 1.2].
@@ -98,3 +113,17 @@ def _clamp_speed(speed: float) -> float:
         logger.warning("ELEVENLABS_VOICE_SPEED=%.2f above maximum %.1f; clamping.", speed, max_speed)
         return max_speed
     return speed
+
+
+def _clamp_volume(volume: float) -> float:
+    """
+    Clamp playback volume to a reasonable range [0.0, 2.0] where 1.0 is neutral.
+    """
+    min_vol, max_vol = 0.0, 2.0
+    if volume < min_vol:
+        logger.warning("TTS_PLAYBACK_VOLUME=%.2f below minimum %.1f; clamping.", volume, min_vol)
+        return min_vol
+    if volume > max_vol:
+        logger.warning("TTS_PLAYBACK_VOLUME=%.2f above maximum %.1f; clamping.", volume, max_vol)
+        return max_vol
+    return volume

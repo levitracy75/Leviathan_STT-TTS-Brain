@@ -26,6 +26,7 @@ class Settings:
     openai_llm_model: str | None
     ollama_model: str | None
     project_root: Path
+    tts_playback_volume: float | None
 
 
 def load_settings(dotenv_path: str | Path = ".env") -> Settings:
@@ -48,6 +49,7 @@ def load_settings(dotenv_path: str | Path = ".env") -> Settings:
         openai_llm_model=get_env("OPENAI_LLM_MODEL"),
         ollama_model=get_env("OLLAMA_MODEL"),
         project_root=Path(project_root),
+        tts_playback_volume=_optional_float(get_env("TTS_PLAYBACK_VOLUME")),
     )
 
 

@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class ElevenLabsClient:
             raise RuntimeError(f"ElevenLabs request failed: {err}") from err
 
 
-def play_audio_bytes(data: bytes, description: str | None = None) -> None:
+def play_audio_bytes(data: bytes, description: str | None = None, volume: float | None = None) -> None:
     """
     Play audio bytes using ffplay when available; otherwise save to temp and log path.
     """
@@ -120,10 +121,11 @@ def play_audio_bytes(data: bytes, description: str | None = None) -> None:
         logger.warning("No audio data to play%s", f" for {description}" if description else "")
         return
 
-    if _ffplay_available():
+    ffplay = _ffplay_path()
+    if ffplay:
         try:
             result = subprocess.run(
-                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-"],
+                _ffplay_command(ffplay, volume),
                 input=data,
                 check=False,
             )
@@ -139,7 +141,7 @@ def play_audio_bytes(data: bytes, description: str | None = None) -> None:
     if not path:
         return
 
-    played = _attempt_play_with_retries(path)
+    played = _attempt_play_with_retries(path, volume=volume)
     if played:
         _safe_remove(path)
         return
@@ -147,19 +149,21 @@ def play_audio_bytes(data: bytes, description: str | None = None) -> None:
     logger.warning("Audio saved to %s (auto-play unavailable; play manually)", path)
 
 
-def play_audio_stream(chunks: Iterable[bytes]) -> None:
+def play_audio_stream(chunks: Iterable[bytes], volume: float | None = None) -> None:
     """
     Stream audio through ffplay if available; otherwise buffer then play once.
     """
-    if not _ffplay_available():
+    ffplay = _ffplay_path()
+    if not ffplay:
         buffered = b"".join(chunks)
-        play_audio_bytes(buffered)
+        play_audio_bytes(buffered, volume=volume)
         return
 
     proc: subprocess.Popen | None = None
+    command = _ffplay_command(ffplay, volume)
     try:
         proc = subprocess.Popen(
-            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", "-"],
+            command,
             stdin=subprocess.PIPE,
         )
         for chunk in chunks:
@@ -179,8 +183,63 @@ def play_audio_stream(chunks: Iterable[bytes]) -> None:
             proc.wait()
 
 
+def _ffplay_path() -> Optional[str]:
+    path = shutil.which("ffplay")
+    if path:
+        return path
+    # Try common Windows install location
+    candidates = [
+        r"C:\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffplay.exe",
+        r"C:\Program Files\ffmpeg\bin\ffplay.exe",
+    ]
+    for cand in candidates:
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def _ffplay_command(ffplay: str, volume: float | None = None) -> list[str]:
+    volume_arg = _ffmpeg_volume_filter(volume)
+    cmd = [ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet"]
+    if volume_arg:
+        cmd.extend(["-af", volume_arg])
+    cmd.append("-")
+    return cmd
+
+
+def _ffmpeg_volume_filter(volume: float | None) -> Optional[str]:
+    if volume is None:
+        return None
+    normalized = _normalize_volume(volume)
+    return f"volume={normalized:.3f}"
+
+
+def _normalize_volume(volume: float) -> float:
+    if volume < 0:
+        logger.warning("Requested volume %.3f is below 0; clamping to 0.", volume)
+        return 0.0
+    if volume > 2.0:
+        logger.warning("Requested volume %.3f is above 2.0; clamping to 2.0.", volume)
+        return 2.0
+    return volume
+
+
+def _volume_percent(volume: float | None) -> int:
+    if volume is None:
+        return 100
+    normalized = _normalize_volume(volume)
+    return max(0, min(int(round(normalized * 100)), 200))
+
+
+def _afplay_volume(volume: float | None) -> Optional[str]:
+    if volume is None:
+        return None
+    normalized = max(0.0, min(_normalize_volume(volume), 1.0))
+    return f"{normalized:.2f}"
+
+
 def _ffplay_available() -> bool:
-    return shutil.which("ffplay") is not None
+    return _ffplay_path() is not None
 
 
 def _write_temp_file(data: bytes) -> Optional[str]:
@@ -193,11 +252,12 @@ def _write_temp_file(data: bytes) -> Optional[str]:
         return None
 
 
-def _auto_play_file(path: str) -> bool:
+def _auto_play_file(path: str, volume: float | None = None) -> bool:
     """
     Try to auto-play the saved file using platform tools.
     """
     if sys.platform.startswith("win"):
+        wm_volume = _volume_percent(volume)
         # Windows Media Player COM object can handle mp3 playback.
         if _run_playback(
             [
@@ -207,7 +267,7 @@ def _auto_play_file(path: str) -> bool:
                 (
                     "$p = New-Object -ComObject WMPlayer.OCX.7;"
                     f"$p.URL = \"{path}\";"
-                    "$p.settings.volume = 100;"
+                    f"$p.settings.volume = {wm_volume};"
                     "$p.controls.play();"
                     "while ($p.playState -ne 1) { Start-Sleep -Milliseconds 200 };"
                     "$p.close();"
@@ -228,7 +288,12 @@ def _auto_play_file(path: str) -> bool:
         )
 
     if sys.platform == "darwin":
-        return _run_playback(["afplay", path], "afplay")
+        afplay_cmd = ["afplay"]
+        afplay_volume = _afplay_volume(volume)
+        if afplay_volume is not None:
+            afplay_cmd.extend(["-v", afplay_volume])
+        afplay_cmd.append(path)
+        return _run_playback(afplay_cmd, "afplay")
 
     # Linux/WSL fallbacks
     for candidate in (["aplay", path], ["paplay", path]):
@@ -240,12 +305,20 @@ def _auto_play_file(path: str) -> bool:
 
 def _run_playback(cmd: list[str], label: str) -> bool:
     try:
-        result = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(
+            cmd,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,  # avoid hangs on broken players
+        )
         if result.returncode == 0:
             return True
         logger.debug("%s returned code %s", label, result.returncode)
     except FileNotFoundError:
         logger.debug("%s not found on PATH", label)
+    except subprocess.TimeoutExpired:
+        logger.debug("%s timed out; skipping playback", label)
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug("%s playback failed: %s", label, exc)
     return False
@@ -258,12 +331,14 @@ def _safe_remove(path: str) -> None:
         logger.debug("Failed to remove temp audio file %s: %s", path, exc)
 
 
-def _attempt_play_with_retries(path: str, attempts: int = 3, delay_seconds: float = 1.0) -> bool:
+def _attempt_play_with_retries(
+    path: str, attempts: int = 3, delay_seconds: float = 1.0, volume: float | None = None
+) -> bool:
     """
     Retry auto playback a few times to tolerate slow startup of platform players.
     """
     for idx in range(attempts):
-        if _auto_play_file(path):
+        if _auto_play_file(path, volume=volume):
             return True
         if idx < attempts - 1:
             time.sleep(delay_seconds)

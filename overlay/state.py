@@ -25,7 +25,7 @@ def write_state(
     }
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(payload, ensure_ascii=False))
+    out_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return out_path
 
 
